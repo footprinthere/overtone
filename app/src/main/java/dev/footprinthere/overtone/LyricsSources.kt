@@ -1,4 +1,4 @@
-package com.example.lyricsfloat
+package dev.footprinthere.overtone
 
 import android.text.Html
 import android.util.Log

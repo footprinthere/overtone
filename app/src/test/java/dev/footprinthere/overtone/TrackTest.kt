@@ -1,4 +1,4 @@
-package com.example.lyricsfloat
+package dev.footprinthere.overtone
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

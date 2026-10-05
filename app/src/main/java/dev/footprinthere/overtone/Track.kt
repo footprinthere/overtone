@@ -1,4 +1,4 @@
-package com.example.lyricsfloat
+package dev.footprinthere.overtone
 
 import kotlin.math.abs
 

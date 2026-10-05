@@ -1,4 +1,4 @@
-package com.example.lyricsfloat
+package dev.footprinthere.overtone
 
 import android.annotation.SuppressLint
 import android.app.PendingIntent

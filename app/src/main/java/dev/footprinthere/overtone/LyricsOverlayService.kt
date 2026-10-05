@@ -1,4 +1,4 @@
-package com.example.lyricsfloat
+package dev.footprinthere.overtone
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -24,8 +24,8 @@ import java.util.concurrent.Executors
 class LyricsOverlayService : Service(), LyricsOverlay.Actions {
 
     companion object {
-        const val ACTION_STOP = "com.example.lyricsfloat.STOP"
-        const val ACTION_TOGGLE_CLICK_THROUGH = "com.example.lyricsfloat.TOGGLE_CLICK_THROUGH"
+        const val ACTION_STOP = "dev.footprinthere.overtone.STOP"
+        const val ACTION_TOGGLE_CLICK_THROUGH = "dev.footprinthere.overtone.TOGGLE_CLICK_THROUGH"
         private const val TAG = "LyricsFloat"
         private const val CHANNEL_ID = "lyrics_overlay"
         private const val NOTI_ID = 1

@@ -1,4 +1,4 @@
-package com.example.lyricsfloat
+package dev.footprinthere.overtone
 
 data class LrcLine(val timeMs: Long, val text: String)
 

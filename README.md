@@ -12,6 +12,10 @@
 - 명령줄: `./gradlew assembleDebug` → `app/build/outputs/apk/debug/app-debug.apk`
   - 폰 연결 후 바로 설치: `./gradlew installDebug`
 - 단위 테스트: `./gradlew testDebugUnitTest`
+- 공유용 APK: `./gradlew assembleRelease` → `app/build/outputs/apk/release/app-release.apk`
+  - 서명 열쇠 경로와 비밀번호는 `~/.gradle/gradle.properties` 의 `OVERTONE_STORE_FILE`, `OVERTONE_STORE_PASSWORD`,
+    `OVERTONE_KEY_ALIAS`, `OVERTONE_KEY_PASSWORD` 에서 읽는다. 이 값이 없으면 서명되지 않은 APK 가 나온다.
+  - 업데이트는 같은 열쇠로 서명해야 설치되므로 열쇠 파일과 비밀번호를 잃어버리지 않게 따로 보관한다.
 
 ## 최초 1회 설정 (앱 실행 화면)
 1. 다른 앱 위에 표시 허용
