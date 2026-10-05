@@ -12,7 +12,9 @@ class TrackTest {
     private fun cand(
         id: Long, track: String, artist: String, dur: Double,
         synced: Boolean = true, plain: Boolean = true,
-    ) = Candidate(id, track, artist, "", dur, if (synced) "[00:01.00]a" else null, if (plain) "a" else null, false)
+    ) = Candidate("LRCLIB", id.toString(), track, artist, "", dur, if (synced) "[00:01.00]a" else null, if (plain) "a" else null, false)
+
+    private fun meta(title: String, artist: String) = Candidate("벅스", "1", title, artist, "", -1.0, null, null, false)
 
     @Test
     fun `영상 제목의 꼬리표와 피처링을 뗀다`() {
@@ -57,7 +59,7 @@ class TrackTest {
                 cand(2, "Through the Night (밤편지)", "IU", 252.0),
             ),
         )
-        assertEquals(2L, choice!!.candidate.id)
+        assertEquals("2", choice!!.candidate.id)
         assertTrue(choice.useSynced)
     }
 
@@ -77,6 +79,39 @@ class TrackTest {
     fun `가수 표기가 달라도 제목과 길이가 맞으면 싱크 가사를 쓴다`() {
         val choice = TrackMatcher.choose(Track("밤편지", "아이유", "", 253), listOf(cand(1, "Through the Night (밤편지)", "IU", 253.0)))
         assertTrue(choice!!.useSynced)
+    }
+
+    @Test
+    fun `유튜브 뮤직이 길이를 안 주면 제목만 같은 곡의 싱크 가사를 쓰지 않는다`() {
+        assertNull(TrackMatcher.choose(Track("Ditto", "NewJeans", "", 0), listOf(cand(1, "Ditto", "Someone Else", 240.0))))
+    }
+
+    @Test
+    fun `가사 없는 검색 결과는 제목과 가수가 모두 맞아야 고른다`() {
+        val track = Track("TELL ME", "찰리빈웍스", "", 200)
+        assertEquals("찰리빈웍스", TrackMatcher.matchWithoutLyrics(track, listOf(meta("Tell Me Tell Me", "레인보우"), meta("TELL ME", "찰리빈웍스")))!!.artistName)
+        assertNull(TrackMatcher.matchWithoutLyrics(track, listOf(meta("TELL ME", "원더걸스"))))
+        assertNotNull(TrackMatcher.matchWithoutLyrics(Track("Love wins all", "아이유", "", 271), listOf(meta("Love wins all", "아이유(IU)"))))
+    }
+
+    @Test
+    fun `다른 버전보다 제목이 똑같은 원곡을 고른다`() {
+        val track = Track("그때도 나", "찰리빈웍스", "", 272)
+        val live = meta("그때도 나 (live)", "찰리빈웍스")
+        val original = meta("그때도 나", "찰리빈웍스")
+        assertEquals("그때도 나", TrackMatcher.matchWithoutLyrics(track, listOf(live, original))!!.trackName)
+        assertNull(TrackMatcher.matchWithoutLyrics(track, listOf(live)))
+        assertNotNull(TrackMatcher.matchWithoutLyrics(Track("그때도 나 (Live)", "찰리빈웍스", "", 0), listOf(live)))
+        assertNotNull(TrackMatcher.matchWithoutLyrics(Track("밤편지", "IU", "", 0), listOf(meta("Through the Night (밤편지)", "IU"))))
+    }
+
+    @Test
+    fun `벅스 싱크 가사를 LRC 로 바꿔 읽는다`() {
+        val parsed = Bugs.parseSynced("12.8|걸음마를 떼고＃19.6|너를 향한＃잘못된 조각")
+        assertEquals(listOf(12_800L to "걸음마를 떼고", 19_600L to "너를 향한"), parsed)
+        val lines = LrcParser.parse(toLrc(parsed))
+        assertEquals(listOf(12_800L, 19_600L), lines.map { it.timeMs })
+        assertEquals("너를 향한", lines[1].text)
     }
 
     @Test

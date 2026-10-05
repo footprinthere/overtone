@@ -60,9 +60,13 @@ data class Track(
     }
 }
 
-/** LRCLIB 검색 결과 한 건. */
+/**
+ * 검색 결과 한 건. [source] 는 화면에 보이는 출처 이름이고, 길이를 모르면 [durationSec] 이 음수다.
+ * 벅스·지니·멜론 검색 결과는 가사 없이 오고, 고른 뒤에 가사를 따로 받아 채운다.
+ */
 data class Candidate(
-    val id: Long,
+    val source: String,
+    val id: String,
     val trackName: String,
     val artistName: String,
     val albumName: String,
@@ -71,6 +75,7 @@ data class Candidate(
     val plain: String?,
     val instrumental: Boolean,
 ) {
+    val key: String get() = "$source:$id"
     val hasLyrics: Boolean get() = synced != null || plain != null || instrumental
 }
 
@@ -81,6 +86,10 @@ object TrackMatcher {
     private const val DURATION_TOLERANCE_SEC = 3.0
     private val NON_WORD = Regex("[^\\p{L}\\p{N}]+")
     private val BRACKETED = Regex("[(\\[]([^)\\]]*)[)\\]]")
+    private val VERSION_MARK = Regex(
+        "\\b(?:live|remix|inst\\.?|instrumental|acoustic|ver\\.?|version|mr|edit|demo|sped\\s*up|slowed|cover|karaoke)\\b",
+        RegexOption.IGNORE_CASE,
+    )
 
     fun normalize(s: String): String = s.lowercase().replace(NON_WORD, "")
 
@@ -97,6 +106,24 @@ object TrackMatcher {
 
     fun titleMatches(a: String, b: String): Boolean = forms(a).any { it in forms(b) }
 
+    /**
+     * 자동 선택에 쓸 제목 일치 정도. 2: 완전히 같음, 1: 괄호 속 표기 등으로 맞음,
+     * 0: 맞지 않거나 결과에만 live·remix 같은 다른 버전 표시가 있음(박자가 달라 싱크가 틀어진다).
+     */
+    private fun titleScore(track: Track, name: String): Int = when {
+        normalize(track.title) == normalize(name) -> 2
+        !titleMatches(track.title, name) -> 0
+        VERSION_MARK.containsMatchIn(name) && !VERSION_MARK.containsMatchIn(track.title) -> 0
+        else -> 1
+    }
+
+    /** 제목이 맞는 결과만, 완전히 같은 것부터. */
+    private fun titleMatched(track: Track, cands: List<Candidate>): List<Candidate> =
+        cands.map { it to titleScore(track, it.trackName) }
+            .filter { it.second > 0 }
+            .sortedByDescending { it.second }
+            .map { it.first }
+
     fun artistMatches(a: String, b: String): Boolean {
         val left = artistForms(a)
         return artistForms(b).any { it in left }
@@ -107,29 +134,40 @@ object TrackMatcher {
             .flatMap { forms(it) }
             .toSet()
 
+    private fun durationKnown(track: Track, c: Candidate) = track.durationSec > 0 && c.durationSec >= 0
+
+    /** 양쪽 길이를 다 알고, 그 차이가 허용 범위 안이다. */
     fun durationClose(track: Track, c: Candidate): Boolean =
-        track.durationSec <= 0 || abs(c.durationSec - track.durationSec) <= DURATION_TOLERANCE_SEC
+        durationKnown(track, c) && abs(c.durationSec - track.durationSec) <= DURATION_TOLERANCE_SEC
+
+    /** 양쪽 길이를 다 아는데 차이가 크다. 같은 곡의 다른 버전(라이브, 리믹스 등)일 가능성이 높다. */
+    fun durationConflict(track: Track, c: Candidate): Boolean =
+        durationKnown(track, c) && !durationClose(track, c)
 
     /**
-     * 자동으로 쓸 결과를 고른다. 제목이 맞고, 가수나 길이 중 하나 이상이 맞아야 후보가 된다.
-     * 싱크 가사는 길이가 맞을 때만 믿는다. 제목만 같은 다른 노래를 고르지 않도록 기준을 넘는 게 없으면 null.
+     * 자동으로 쓸 결과를 고른다. 제목이 맞고, 가수가 맞거나 길이가 확실히 맞아야 후보가 된다.
+     * 길이가 어긋나면 싱크 가사를 믿지 않는다. 제목만 같은 다른 노래를 고르지 않도록 기준을 넘는 게 없으면 null.
      */
     fun choose(track: Track, cands: List<Candidate>): Choice? {
-        val ok = cands.filter { it.hasLyrics && titleMatches(track.title, it.trackName) }
+        val ok = titleMatched(track, cands.filter { it.hasLyrics })
         fun artist(c: Candidate) = artistMatches(track.artist, c.artistName)
-        fun close(c: Candidate) = durationClose(track, c)
 
-        ok.firstOrNull { it.synced != null && close(it) && artist(it) }?.let { return Choice(it, true) }
-        ok.firstOrNull { it.synced != null && close(it) }?.let { return Choice(it, true) }
-        ok.firstOrNull { (it.plain != null || it.instrumental) && artist(it) && close(it) }?.let { return Choice(it, false) }
-        ok.firstOrNull { (it.plain != null || it.instrumental) && artist(it) }?.let { return Choice(it, false) }
+        ok.firstOrNull { it.synced != null && artist(it) && !durationConflict(track, it) }?.let { return Choice(it, true) }
+        ok.firstOrNull { it.synced != null && durationClose(track, it) }?.let { return Choice(it, true) }
+        ok.firstOrNull { artist(it) && !durationConflict(track, it) }?.let { return Choice(it, false) }
+        ok.firstOrNull { artist(it) }?.let { return Choice(it, false) }
         return null
+    }
+
+    /** 가사를 받기 전의 검색 결과(벅스·지니·멜론) 중에서 같은 곡으로 볼 수 있는 첫 결과. */
+    fun matchWithoutLyrics(track: Track, cands: List<Candidate>): Candidate? = titleMatched(track, cands).firstOrNull {
+        artistMatches(track.artist, it.artistName) && !durationConflict(track, it)
     }
 
     /** 직접 고르는 화면용 정렬: 잘 맞는 것부터. */
     fun rank(track: Track, cands: List<Candidate>): List<Candidate> =
-        cands.filter { it.hasLyrics }.sortedByDescending {
-            (if (titleMatches(track.title, it.trackName)) 4 else 0) +
+        cands.sortedByDescending {
+            titleScore(track, it.trackName) * 2 +
                 (if (artistMatches(track.artist, it.artistName)) 2 else 0) +
                 (if (durationClose(track, it)) 2 else 0) +
                 (if (it.synced != null) 1 else 0)

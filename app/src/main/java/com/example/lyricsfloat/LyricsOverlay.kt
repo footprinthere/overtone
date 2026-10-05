@@ -37,7 +37,6 @@ class LyricsOverlay(
 ) {
     interface Actions {
         fun onClose()
-        fun onWebSearch()
         fun onOffsetDelta(deltaMs: Long)
         fun onOffsetReset()
         fun onPickOther()
@@ -222,7 +221,6 @@ class LyricsOverlay(
         row.addView(offsetView)
         row.addView(button("빠르게 ▶") { actions.onOffsetDelta(OFFSET_STEP_MS) })
         row.addView(button("다른 가사") { actions.onPickOther() })
-        row.addView(button("웹 검색") { actions.onWebSearch() })
         row.addView(button("터치 통과") {
             prefs.clickThrough = true
             applySettings()
@@ -255,16 +253,20 @@ class LyricsOverlay(
     }
 
     private fun candidateRow(c: Candidate, durationSec: Int, onClick: () -> Unit): TextView {
-        val kind = when {
-            c.synced != null -> "싱크"
-            c.instrumental -> "연주곡"
-            else -> "일반"
+        val details = mutableListOf(c.source)
+        when {
+            c.synced != null -> details += "싱크"
+            c.instrumental -> details += "연주곡"
+            c.plain != null -> details += "일반"
         }
-        val len = c.durationSec.roundToInt()
-        val diff = if (durationSec > 0) " (%+d초)".format(len - durationSec) else ""
+        if (c.durationSec >= 0) {
+            val len = c.durationSec.roundToInt()
+            val diff = if (durationSec > 0) " (%+d초)".format(len - durationSec) else ""
+            details += "${len / 60}:${(len % 60).toString().padStart(2, '0')}$diff"
+        }
+        if (c.albumName.isNotBlank()) details += c.albumName
         return text(14f, Color.WHITE).apply {
-            val time = "${len / 60}:${(len % 60).toString().padStart(2, '0')}"
-            text = "${c.trackName} — ${c.artistName}\n${c.albumName} · $time$diff · $kind"
+            text = "${c.trackName} — ${c.artistName}\n${details.joinToString(" · ")}"
             setPadding(dp(16), dp(8), dp(16), dp(8))
             setOnClickListener { onClick() }
         }

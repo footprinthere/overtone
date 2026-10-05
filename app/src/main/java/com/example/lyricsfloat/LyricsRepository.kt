@@ -5,44 +5,74 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
 import java.security.MessageDigest
 
 class Lyrics(val choice: Choice) {
-    val lines: List<LrcLine> =
-        if (choice.useSynced) choice.candidate.synced?.let { LrcParser.parse(it) }.orEmpty() else emptyList()
+    private val parsed: List<LrcLine> = choice.candidate.synced?.let { LrcParser.parse(it) }.orEmpty()
+    val lines: List<LrcLine> = if (choice.useSynced) parsed else emptyList()
+
+    /** 싱크 가사만 있는데 싱크를 믿지 못할 때는 시간 정보를 뺀 가사를 보여준다. */
     val plain: String? = choice.candidate.plain
+        ?: parsed.takeIf { it.isNotEmpty() }?.joinToString("\n") { it.text }
     val instrumental: Boolean = choice.candidate.instrumental
 }
 
-/** LRCLIB(lrclib.net) 공개 API에서 가사를 가져오고, 고른 결과를 기기에 저장해 둔다. API 키 불필요. */
+/**
+ * 가사를 찾아 기기에 저장해 둔다. LRCLIB(lrclib.net) → 벅스 → 지니 → 멜론 순서로 찾고,
+ * 싱크 가사를 찾으면 바로 멈춘다. 끝까지 싱크 가사가 없으면 처음 찾은 일반 가사를 쓴다.
+ */
 class LyricsRepository(context: Context) {
     private val cacheDir = File(context.filesDir, "lyrics").apply { mkdirs() }
+    private val sources = listOf(Bugs, Genie, Melon)
 
     /** [isStale] 이 true 가 되면 남은 요청을 건너뛴다. 곡을 빠르게 넘길 때 지난 곡 요청이 새 곡을 막지 않게 하려는 것. */
     fun find(track: Track, isStale: () -> Boolean): Lyrics? {
         loadCached(track)?.let { return Lyrics(it) }
 
-        val found = LinkedHashMap<Long, Candidate>()
-        for (url in queries(track, broad = false)) {
+        val found = LinkedHashMap<String, Candidate>()
+        for (url in lrclibQueries(track, broad = false)) {
             if (isStale()) return null
-            fetchCandidates(url).forEach { found.putIfAbsent(it.id, it) }
+            fetchLrclib(url).forEach { found.putIfAbsent(it.key, it) }
             val choice = TrackMatcher.choose(track, found.values.toList())
             if (choice != null && choice.useSynced) return save(track, choice)
         }
-        return TrackMatcher.choose(track, found.values.toList())?.let { save(track, it) }
+        var fallback = TrackMatcher.choose(track, found.values.toList())
+
+        for (src in sources) {
+            if (isStale()) return null
+            val match = TrackMatcher.matchWithoutLyrics(track, search(src, track)) ?: continue
+            val loaded = load(src, match) ?: continue
+            val choice = Choice(loaded, useSynced = loaded.synced != null)
+            Log.d(TAG, "${src.name}에서 찾음: ${loaded.trackName} / ${loaded.artistName} (싱크 ${choice.useSynced})")
+            if (choice.useSynced) return save(track, choice)
+            if (fallback == null) fallback = choice
+        }
+        return fallback?.let { save(track, it) }
     }
 
-    /** 직접 고르기 화면용. 자동 선택보다 넓게 검색한다. */
+    /** 직접 고르기 화면용. 모든 출처에서 자동 선택보다 넓게 검색한다. 벅스·지니·멜론 결과는 가사가 비어 있다. */
     fun candidates(track: Track): List<Candidate> {
-        val found = LinkedHashMap<Long, Candidate>()
-        for (url in queries(track, broad = true)) fetchCandidates(url).forEach { found.putIfAbsent(it.id, it) }
+        val found = LinkedHashMap<String, Candidate>()
+        for (url in lrclibQueries(track, broad = true)) {
+            fetchLrclib(url).filter { it.hasLyrics }.forEach { found.putIfAbsent(it.key, it) }
+        }
+        for (src in sources) search(src, track).forEach { found.putIfAbsent(it.key, it) }
         return TrackMatcher.rank(track, found.values.toList())
     }
 
-    fun save(track: Track, choice: Choice): Lyrics {
+    /** 직접 고른 결과. 가사가 아직 없으면 받아 온다. 고른 사람의 판단을 믿고 싱크가 있으면 쓴다. */
+    fun pick(track: Track, c: Candidate): Lyrics? {
+        val loaded = if (c.hasLyrics) c else sources.firstOrNull { it.name == c.source }?.let { load(it, c) }
+        return loaded?.let { save(track, Choice(it, useSynced = it.synced != null)) }
+    }
+
+    private fun search(src: LyricsSource, track: Track): List<Candidate> =
+        runCatching { src.search(track) }.onFailure { Log.w(TAG, "${src.name} 검색 실패", it) }.getOrDefault(emptyList())
+
+    private fun load(src: LyricsSource, c: Candidate): Candidate? =
+        runCatching { src.load(c) }.onFailure { Log.w(TAG, "${src.name} 가사 받기 실패", it) }.getOrNull()
+
+    private fun save(track: Track, choice: Choice): Lyrics {
         runCatching {
             val o = toJson(choice.candidate).put("useSynced", choice.useSynced)
             cacheFile(track).writeText(o.toString())
@@ -55,7 +85,7 @@ class LyricsRepository(context: Context) {
         if (!f.exists()) return null
         return runCatching {
             val o = JSONObject(f.readText())
-            Choice(fromJson(o), o.optBoolean("useSynced", false))
+            Choice(fromJson(o, o.optString("source", LRCLIB)), o.optBoolean("useSynced", false))
         }.onFailure { Log.w(TAG, "저장된 가사 읽기 실패", it) }.getOrNull()
     }
 
@@ -65,34 +95,35 @@ class LyricsRepository(context: Context) {
         return File(cacheDir, "$hash.json")
     }
 
-    private fun queries(track: Track, broad: Boolean): List<String> {
-        val t = enc(track.title)
-        val a = enc(track.primaryArtist)
+    private fun lrclibQueries(track: Track, broad: Boolean): List<String> {
+        val t = Http.enc(track.title)
+        val a = Http.enc(track.primaryArtist)
         val out = mutableListOf<String>()
         if (track.artist.isNotBlank()) {
             out += "$BASE/get?track_name=$t&artist_name=$a" +
                 (if (track.durationSec > 0) "&duration=${track.durationSec}" else "")
             out += "$BASE/search?track_name=$t&artist_name=$a"
         }
-        out += "$BASE/search?q=${enc("${track.title} ${track.primaryArtist}".trim())}"
+        out += "$BASE/search?q=${Http.enc("${track.title} ${track.primaryArtist}".trim())}"
         if (broad) out += "$BASE/search?track_name=$t"
         return out
     }
 
-    private fun fetchCandidates(url: String): List<Candidate> {
-        val body = httpGet(url) ?: return emptyList()
+    private fun fetchLrclib(url: String): List<Candidate> {
+        val body = Http.get(url, LRCLIB_UA) ?: return emptyList()
         return runCatching {
             if (body.trimStart().startsWith("[")) {
                 val arr = JSONArray(body)
-                (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.let(::fromJson) }
+                (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.let { o -> fromJson(o, LRCLIB) } }
             } else {
-                listOf(fromJson(JSONObject(body)))
+                listOf(fromJson(JSONObject(body), LRCLIB))
             }
         }.onFailure { Log.w(TAG, "응답 해석 실패: $url", it) }.getOrDefault(emptyList())
     }
 
-    private fun fromJson(o: JSONObject) = Candidate(
-        id = o.optLong("id"),
+    private fun fromJson(o: JSONObject, source: String) = Candidate(
+        source = source,
+        id = o.optString("id"),
         trackName = str(o, "trackName").orEmpty(),
         artistName = str(o, "artistName").orEmpty(),
         albumName = str(o, "albumName").orEmpty(),
@@ -103,6 +134,7 @@ class LyricsRepository(context: Context) {
     )
 
     private fun toJson(c: Candidate) = JSONObject()
+        .put("source", c.source)
         .put("id", c.id)
         .put("trackName", c.trackName)
         .put("artistName", c.artistName)
@@ -116,32 +148,10 @@ class LyricsRepository(context: Context) {
     private fun str(o: JSONObject, k: String): String? =
         if (!o.has(k) || o.isNull(k)) null else o.getString(k).takeIf { it.isNotBlank() }
 
-    private fun enc(s: String): String = URLEncoder.encode(s, "UTF-8")
-
-    private fun httpGet(url: String): String? {
-        val c = URL(url).openConnection() as HttpURLConnection
-        return try {
-            c.connectTimeout = 6000
-            c.readTimeout = 6000
-            c.setRequestProperty("User-Agent", "LyricsFloat/1.1 (personal app)")
-            when (c.responseCode) {
-                200 -> c.inputStream.bufferedReader().use { it.readText() }
-                404 -> null
-                else -> {
-                    Log.w(TAG, "HTTP ${c.responseCode}: $url")
-                    null
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "요청 실패: $url", e)
-            null
-        } finally {
-            c.disconnect()
-        }
-    }
-
     companion object {
         private const val TAG = "LyricsFloat"
         private const val BASE = "https://lrclib.net/api"
+        private const val LRCLIB = "LRCLIB"
+        private const val LRCLIB_UA = "LyricsFloat/1.2 (personal app)"
     }
 }

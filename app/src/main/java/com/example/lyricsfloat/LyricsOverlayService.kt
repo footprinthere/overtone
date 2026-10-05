@@ -11,7 +11,6 @@ import android.content.res.Configuration
 import android.graphics.drawable.Icon
 import android.media.MediaMetadata
 import android.media.session.PlaybackState
-import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -32,7 +31,7 @@ class LyricsOverlayService : Service(), LyricsOverlay.Actions {
         private const val NOTI_ID = 1
         private const val LEAD_MS = 250L // 가사를 살짝 앞당겨 표시
         private const val FETCH_DELAY_MS = 400L
-        private const val NOT_FOUND = "가사를 찾지 못했어요.\n위쪽 ⋯ 메뉴의 '다른 가사'나 '웹 검색'을 써 보세요."
+        private const val NOT_FOUND = "LRCLIB·벅스·지니·멜론에서 가사를 찾지 못했어요.\n위쪽 ⋯ 메뉴의 '다른 가사'에서 직접 골라 보세요."
 
         @Volatile
         var instance: LyricsOverlayService? = null
@@ -290,14 +289,6 @@ class LyricsOverlayService : Service(), LyricsOverlay.Actions {
 
     override fun onClose() = stopSelf()
 
-    override fun onWebSearch() {
-        val t = track ?: return
-        val q = Uri.encode("${t.title} ${t.artist} 가사".trim())
-        val i = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=$q"))
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        runCatching { startActivity(i) }.onFailure { Log.w(TAG, "웹 검색 열기 실패", it) }
-    }
-
     override fun onOffsetDelta(deltaMs: Long) = setOffset(offsetMs + deltaMs)
 
     override fun onOffsetReset() = setOffset(0L)
@@ -320,10 +311,22 @@ class LyricsOverlayService : Service(), LyricsOverlay.Actions {
                 .getOrDefault(emptyList())
             handler.post {
                 if (gen != generation || !overlay.isPicking) return@post
-                overlay.showPicker(list, t.durationSec) { c ->
-                    generation++
-                    applyLyrics(repo.save(t, Choice(c, useSynced = c.synced != null)))
-                }
+                overlay.showPicker(list, t.durationSec) { c -> pick(t, c) }
+            }
+        }
+    }
+
+    private fun pick(t: Track, c: Candidate) {
+        val gen = ++generation
+        overlay.showMessage("${c.source}에서 가사를 가져오는 중…")
+        pool.execute {
+            val r = runCatching { repo.pick(t, c) }
+                .onFailure { Log.w(TAG, "고른 가사 받기 실패: $c", it) }
+                .getOrNull()
+            handler.post {
+                if (gen != generation) return@post
+                if (r == null) overlay.showMessage("${c.source}에서 가사를 가져오지 못했어요.\n'다른 가사'에서 다른 결과를 골라 보세요.")
+                else applyLyrics(r)
             }
         }
     }
