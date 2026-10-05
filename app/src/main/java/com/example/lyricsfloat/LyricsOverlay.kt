@@ -1,5 +1,9 @@
 package com.example.lyricsfloat
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.TimeInterpolator
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -20,6 +24,8 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.view.animation.AccelerateInterpolator
+import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -29,7 +35,7 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 
-/** 다른 앱 위에 떠 있는 가사 창. 여러 줄 모드와 얇은 띠 모드를 오간다. */
+/** 다른 앱 위에 떠 있는 가사 창. 여러 줄 모드와 얇은 띠 모드를 오가고, 화면 가장자리의 아이콘으로 접을 수 있다. */
 class LyricsOverlay(
     private val ctx: Context,
     private val prefs: Prefs,
@@ -75,8 +81,9 @@ class LyricsOverlay(
 
     // 얇은 띠 모드
     private val compactView = LinearLayout(ctx).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(14), dp(8), dp(14), dp(8))
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(14), dp(8), dp(2), dp(8))
     }
     private val currentLine = text(17f, Color.WHITE).apply {
         typeface = Typeface.DEFAULT_BOLD
@@ -86,6 +93,13 @@ class LyricsOverlay(
     private val nextLine = text(13f, DIM).apply {
         maxLines = 1
         ellipsize = TextUtils.TruncateAt.END
+    }
+
+    // 접었을 때의 아이콘
+    private val bubble = text(20f, Color.WHITE).apply {
+        text = "♪"
+        gravity = Gravity.CENTER
+        visibility = View.GONE
     }
 
     private val params = WindowManager.LayoutParams(
@@ -100,13 +114,19 @@ class LyricsOverlay(
     private var picking = false
     private var content: Content = Content.Message("")
     private var index = -1
+    private var minimized = false
+    private var restoreHeight = 0
+    private var anim: ValueAnimator? = null
 
     init {
         root.background = background
         buildFull()
         buildCompact()
+        bubble.setOnClickListener { restore() }
+        bubble.setOnTouchListener(DragListener())
         root.addView(full, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(compactView, FrameLayout.LayoutParams(MATCH, WRAP))
+        root.addView(bubble, FrameLayout.LayoutParams(MATCH, MATCH))
         applySettings()
     }
 
@@ -119,6 +139,7 @@ class LyricsOverlay(
     }
 
     fun hide() {
+        anim?.end()
         if (!attached) return
         wm.removeView(root)
         attached = false
@@ -175,7 +196,14 @@ class LyricsOverlay(
         currentLine.setTextSize(TypedValue.COMPLEX_UNIT_SP, font * 1.1f)
         nextLine.setTextSize(TypedValue.COMPLEX_UNIT_SP, font * 0.85f)
 
-        val through = prefs.clickThrough
+        applyTouchFlags()
+        compact = prefs.compact
+        applyMode()
+    }
+
+    /** 접힌 아이콘은 눌러서 펼 수 있어야 하므로 터치 통과를 적용하지 않는다. */
+    private fun applyTouchFlags() {
+        val through = prefs.clickThrough && !minimized
         params.flags = if (through) {
             params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         } else {
@@ -187,14 +215,108 @@ class LyricsOverlay(
         } else {
             1f
         }
-
-        compact = prefs.compact
-        applyMode()
     }
 
     fun onConfigurationChanged() {
+        if (minimized && anim == null) {
+            val (sw, _) = screenSize()
+            params.x = if (params.x > 0) sw - params.width else 0
+        }
         clampToScreen()
         update()
+    }
+
+    // ---------- 접기·펴기 ----------
+
+    /** 가사를 먼저 흐리게 한 뒤, 창을 가까운 화면 가장자리로 빨아들이듯 줄여 아이콘으로 만든다. */
+    private fun minimize() {
+        if (minimized || anim != null) return
+        minimized = true
+        applyTouchFlags()
+        val (sw, sh) = screenSize()
+        val size = dp(BUBBLE_DP)
+        val h = if (params.height > 0) params.height else root.height
+        restoreHeight = h
+        params.height = h
+        val toRight = params.x + params.width / 2 > sw / 2
+        val target = intArrayOf(
+            if (toRight) sw - size else 0,
+            (params.y + h / 2 - size / 2).coerceIn(0, max(0, sh - size)),
+            size, size,
+        )
+        val content = if (full.visibility == View.VISIBLE) full else compactView
+        val startRadius = background.cornerRadius
+        animateWindow(target, 320, AccelerateInterpolator(1.5f), onFrame = { t ->
+            content.alpha = (1 - t * 2.5f).coerceAtLeast(0f)
+            if (content.alpha == 0f) content.visibility = View.GONE
+            background.cornerRadius = startRadius + (size / 2f - startRadius) * t
+        }) {
+            content.visibility = View.GONE
+            content.alpha = 1f
+            background.cornerRadius = size / 2f
+            bubble.visibility = View.VISIBLE
+            bubble.alpha = 0f
+            bubble.animate().alpha(1f).setDuration(120).start()
+        }
+    }
+
+    /** 아이콘을 원래 자리와 크기로 다시 펼친다. */
+    private fun restore() {
+        if (!minimized || anim != null) return
+        minimized = false
+        bubble.visibility = View.GONE
+        val asCompact = compact && !picking
+        val target = targetBounds(asCompact)
+        if (target[3] == WRAP) target[3] = restoreHeight
+        val startRadius = background.cornerRadius
+        val endRadius = dp(if (asCompact) 12 else 14).toFloat()
+        animateWindow(target, 260, DecelerateInterpolator(), onFrame = { t ->
+            background.cornerRadius = startRadius + (endRadius - startRadius) * t
+        }) {
+            applyTouchFlags()
+            applyMode()
+            val content = if (asCompact) compactView else full
+            content.alpha = 0f
+            content.animate().alpha(1f).setDuration(150).start()
+        }
+    }
+
+    /** 아이콘을 끌다 놓으면 가까운 쪽 가장자리에 붙인다. */
+    private fun snapToEdge() {
+        val (sw, _) = screenSize()
+        val size = params.width
+        val x = if (params.x + size / 2 > sw / 2) sw - size else 0
+        animateWindow(intArrayOf(x, params.y, size, size), 180, DecelerateInterpolator(), onFrame = {}) {}
+    }
+
+    private fun animateWindow(
+        to: IntArray,
+        durationMs: Long,
+        easing: TimeInterpolator,
+        onFrame: (Float) -> Unit,
+        onEnd: () -> Unit,
+    ) {
+        val from = intArrayOf(params.x, params.y, params.width, params.height)
+        anim = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = durationMs
+            interpolator = easing
+            addUpdateListener {
+                val t = it.animatedValue as Float
+                params.x = from[0] + ((to[0] - from[0]) * t).toInt()
+                params.y = from[1] + ((to[1] - from[1]) * t).toInt()
+                params.width = from[2] + ((to[2] - from[2]) * t).toInt()
+                params.height = from[3] + ((to[3] - from[3]) * t).toInt()
+                onFrame(t)
+                update()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    anim = null
+                    onEnd()
+                }
+            })
+            start()
+        }
     }
 
     // ---------- 화면 구성 ----------
@@ -211,6 +333,7 @@ class LyricsOverlay(
         header.addView(button("⋯") {
             controls.visibility = if (controls.visibility == View.VISIBLE) View.GONE else View.VISIBLE
         })
+        header.addView(button("—") { minimize() })
         header.addView(button("✕") { actions.onClose() })
 
         val row = LinearLayout(ctx).apply {
@@ -246,8 +369,11 @@ class LyricsOverlay(
     }
 
     private fun buildCompact() {
-        compactView.addView(currentLine)
-        compactView.addView(nextLine)
+        val lines = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        lines.addView(currentLine)
+        lines.addView(nextLine)
+        compactView.addView(lines, LinearLayout.LayoutParams(0, WRAP, 1f))
+        compactView.addView(button("—") { minimize() })
         compactView.setOnClickListener { setCompact(false) }
         compactView.setOnTouchListener(DragListener())
     }
@@ -287,20 +413,35 @@ class LyricsOverlay(
 
     /** 현재 모드에 맞게 보일 영역과 창 크기를 정하고 내용을 다시 그린다. */
     private fun applyMode() {
+        if (minimized) {
+            render()
+            return
+        }
         val asCompact = compact && !picking
         full.visibility = if (asCompact) View.GONE else View.VISIBLE
         compactView.visibility = if (asCompact) View.VISIBLE else View.GONE
         background.cornerRadius = dp(if (asCompact) 12 else 14).toFloat()
 
-        val (sw, _) = screenSize()
-        val (x, y, w, h) = prefs.bounds(asCompact)
-        params.width = if (w > 0) w else sw - dp(32)
-        params.height = if (asCompact) WRAP else if (h > 0) h else dp(280)
-        params.x = if (x >= 0) x else dp(16)
-        params.y = if (y >= 0) y else dp(if (asCompact) 80 else 120)
+        val (x, y, w, h) = targetBounds(asCompact)
+        params.x = x
+        params.y = y
+        params.width = w
+        params.height = h
         clampToScreen()
         render()
         update()
+    }
+
+    /** 저장된 위치·크기. 저장된 적 없으면 기본값. 얇은 모드의 높이는 내용에 맞춘다(WRAP). */
+    private fun targetBounds(asCompact: Boolean): IntArray {
+        val (sw, _) = screenSize()
+        val (x, y, w, h) = prefs.bounds(asCompact)
+        return intArrayOf(
+            if (x >= 0) x else dp(16),
+            if (y >= 0) y else dp(if (asCompact) 80 else 120),
+            if (w > 0) w else sw - dp(32),
+            if (asCompact) WRAP else if (h > 0) h else dp(280),
+        )
     }
 
     private fun setContent(c: Content) {
@@ -366,8 +507,10 @@ class LyricsOverlay(
 
     private fun clampToScreen() {
         val (sw, sh) = screenSize()
-        params.width = params.width.coerceIn(dp(MIN_W_DP).coerceAtMost(sw), sw)
-        if (params.height > 0) params.height = params.height.coerceIn(dp(MIN_H_DP).coerceAtMost(sh), sh)
+        if (!minimized) {
+            params.width = params.width.coerceIn(dp(MIN_W_DP).coerceAtMost(sw), sw)
+            if (params.height > 0) params.height = params.height.coerceIn(dp(MIN_H_DP).coerceAtMost(sh), sh)
+        }
         val h = if (params.height > 0) params.height else max(root.height, dp(56))
         params.x = params.x.coerceIn(0, max(0, sw - params.width))
         params.y = params.y.coerceIn(0, max(0, sh - h))
@@ -408,7 +551,11 @@ class LyricsOverlay(
                         update()
                     }
                 }
-                MotionEvent.ACTION_UP -> if (moved) saveBounds() else v.performClick()
+                MotionEvent.ACTION_UP -> when {
+                    !moved -> v.performClick()
+                    minimized -> snapToEdge()
+                    else -> saveBounds()
+                }
             }
             return true
         }
@@ -460,5 +607,6 @@ class LyricsOverlay(
         private const val MIN_W_DP = 160
         private const val MIN_H_DP = 120
         private const val OFFSET_STEP_MS = 500L
+        private const val BUBBLE_DP = 48
     }
 }
