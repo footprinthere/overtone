@@ -74,10 +74,16 @@ class LyricsOverlay(
     }
     private val controls = HorizontalScrollView(ctx).apply {
         isHorizontalScrollBarEnabled = false
+        isHorizontalFadingEdgeEnabled = true
+        setFadingEdgeLength(dp(32))
         visibility = View.GONE
     }
     private val offsetView = chip("보정 0.0초") { actions.onOffsetReset() }
-    private val scrollView = ScrollView(ctx).apply { isVerticalScrollBarEnabled = false }
+    private val scrollView = ScrollView(ctx).apply {
+        isVerticalScrollBarEnabled = false
+        isVerticalFadingEdgeEnabled = true
+        setFadingEdgeLength(dp(36))
+    }
     private val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
     private val lyricsView = text(16f, Palette.LYRIC_DIM).apply {
         setLineSpacing(0f, 1.25f)
@@ -473,11 +479,13 @@ class LyricsOverlay(
         when (val c = content) {
             is Content.Message -> {
                 lyricsView.text = c.text
+                currentLine.setTextColor(Color.WHITE)
                 currentLine.text = c.text
                 nextLine.text = ""
             }
             is Content.Plain -> {
                 lyricsView.text = c.text
+                currentLine.setTextColor(Color.WHITE)
                 currentLine.text = "싱크 없는 가사예요"
                 nextLine.text = "탭하면 펼쳐서 볼 수 있어요"
             }
@@ -489,6 +497,7 @@ class LyricsOverlay(
         val lines = (content as? Content.Synced)?.lines ?: return
         if (picking) return
         fun label(i: Int) = lines.getOrNull(i)?.text?.ifBlank { "♪" } ?: ""
+        currentLine.setTextColor(Palette.ACCENT)
         currentLine.text = if (index < 0) "♪" else label(index)
         nextLine.text = label(index + 1)
         if (compact) return
