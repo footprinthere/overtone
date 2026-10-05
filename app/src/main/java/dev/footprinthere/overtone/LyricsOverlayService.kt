@@ -26,7 +26,7 @@ class LyricsOverlayService : Service(), LyricsOverlay.Actions {
     companion object {
         const val ACTION_STOP = "dev.footprinthere.overtone.STOP"
         const val ACTION_TOGGLE_CLICK_THROUGH = "dev.footprinthere.overtone.TOGGLE_CLICK_THROUGH"
-        private const val TAG = "LyricsFloat"
+        private const val TAG = "Overtone"
         private const val CHANNEL_ID = "lyrics_overlay"
         private const val NOTI_ID = 1
         private const val LEAD_MS = 250L // 가사를 살짝 앞당겨 표시

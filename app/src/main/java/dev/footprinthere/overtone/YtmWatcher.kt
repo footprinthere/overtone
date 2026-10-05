@@ -59,7 +59,7 @@ class YtmWatcher(
     }
 
     companion object {
-        private const val TAG = "LyricsFloat"
+        private const val TAG = "Overtone"
         private const val YTM_PACKAGE = "com.google.android.apps.youtube.music"
     }
 }

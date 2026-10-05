@@ -338,10 +338,10 @@ class LyricsOverlay(
         }
         header.addView(titleView, LinearLayout.LayoutParams(0, WRAP, 1f))
         header.addView(iconButton(R.drawable.ic_compact, "얇게") { setCompact(true) })
+        header.addView(iconButton(R.drawable.ic_minimize, "접기") { minimize() })
         header.addView(iconButton(R.drawable.ic_more, "더 보기") {
             controls.visibility = if (controls.visibility == View.VISIBLE) View.GONE else View.VISIBLE
         })
-        header.addView(iconButton(R.drawable.ic_minimize, "접기") { minimize() })
         header.addView(iconButton(R.drawable.ic_close, "닫기") { actions.onClose() })
 
         val row = LinearLayout(ctx).apply {

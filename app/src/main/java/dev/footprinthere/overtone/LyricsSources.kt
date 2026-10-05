@@ -159,7 +159,7 @@ fun toLrc(lines: List<Pair<Long, String>>): String = lines.sortedBy { it.first }
 }
 
 object Http {
-    private const val TAG = "LyricsFloat"
+    private const val TAG = "Overtone"
 
     // 휴대폰 브라우저로 보이면 모바일 페이지로 넘겨 버리는 사이트가 있어 PC 브라우저처럼 요청한다.
     const val BROWSER_UA =

@@ -149,9 +149,9 @@ class LyricsRepository(context: Context) {
         if (!o.has(k) || o.isNull(k)) null else o.getString(k).takeIf { it.isNotBlank() }
 
     companion object {
-        private const val TAG = "LyricsFloat"
+        private const val TAG = "Overtone"
         private const val BASE = "https://lrclib.net/api"
         private const val LRCLIB = "LRCLIB"
-        private const val LRCLIB_UA = "LyricsFloat/1.2 (personal app)"
+        private const val LRCLIB_UA = "Overtone/1.2 (personal app)"
     }
 }

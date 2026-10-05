@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "LyricsFloat"
+rootProject.name = "Overtone"
 include(":app")
