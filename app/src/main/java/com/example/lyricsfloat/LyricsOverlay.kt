@@ -5,6 +5,7 @@ import android.animation.AnimatorListenerAdapter
 import android.animation.TimeInterpolator
 import android.animation.ValueAnimator
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
@@ -28,6 +29,7 @@ import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -59,11 +61,14 @@ class LyricsOverlay(
     private val touchSlop = ViewConfiguration.get(ctx).scaledTouchSlop
 
     private val root = FrameLayout(ctx)
-    private val background = GradientDrawable().apply { cornerRadius = dp(14).toFloat() }
+    private val background = GradientDrawable().apply {
+        cornerRadius = dp(RADIUS_FULL_DP).toFloat()
+        setStroke(dp(1), Palette.GLASS_EDGE)
+    }
 
     // 여러 줄 모드
     private val full = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-    private val titleView = text(13f, Color.WHITE).apply {
+    private val titleView = text(12f, Palette.GLASS_TITLE).apply {
         maxLines = 1
         ellipsize = TextUtils.TruncateAt.END
     }
@@ -71,10 +76,10 @@ class LyricsOverlay(
         isHorizontalScrollBarEnabled = false
         visibility = View.GONE
     }
-    private val offsetView = button("보정 0.0초") { actions.onOffsetReset() }
+    private val offsetView = chip("보정 0.0초") { actions.onOffsetReset() }
     private val scrollView = ScrollView(ctx).apply { isVerticalScrollBarEnabled = false }
     private val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-    private val lyricsView = text(16f, DIM).apply {
+    private val lyricsView = text(16f, Palette.LYRIC_DIM).apply {
         setLineSpacing(0f, 1.25f)
         setPadding(dp(16), dp(6), dp(16), dp(24))
     }
@@ -83,22 +88,23 @@ class LyricsOverlay(
     private val compactView = LinearLayout(ctx).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        setPadding(dp(14), dp(8), dp(2), dp(8))
+        setPadding(dp(18), dp(10), dp(4), dp(10))
     }
-    private val currentLine = text(17f, Color.WHITE).apply {
+    private val currentLine = text(17f, Palette.ACCENT).apply {
         typeface = Typeface.DEFAULT_BOLD
         maxLines = 2
         ellipsize = TextUtils.TruncateAt.END
     }
-    private val nextLine = text(13f, DIM).apply {
+    private val nextLine = text(13f, Palette.LYRIC_DIM).apply {
         maxLines = 1
         ellipsize = TextUtils.TruncateAt.END
     }
 
     // 접었을 때의 아이콘
-    private val bubble = text(20f, Color.WHITE).apply {
-        text = "♪"
-        gravity = Gravity.CENTER
+    private val bubble = ImageView(ctx).apply {
+        setImageResource(R.drawable.ic_tile)
+        imageTintList = ColorStateList.valueOf(Palette.ACCENT)
+        setPadding(dp(12), dp(12), dp(12), dp(12))
         visibility = View.GONE
     }
 
@@ -173,7 +179,7 @@ class LyricsOverlay(
         picking = true
         applyMode()
         body.removeAllViews()
-        body.addView(text(13f, DIM).apply {
+        body.addView(text(13f, Palette.LYRIC_DIM).apply {
             setPadding(dp(16), dp(6), dp(16), dp(6))
             text = when {
                 cands == null -> "후보를 찾는 중…"
@@ -182,7 +188,9 @@ class LyricsOverlay(
             }
         })
         cands?.forEach { c -> body.addView(candidateRow(c, durationSec) { closePicker(); onPick(c) }) }
-        body.addView(button("취소") { closePicker() })
+        body.addView(chip("취소") { closePicker() }.apply {
+            (layoutParams as LinearLayout.LayoutParams).setMargins(dp(16), dp(8), 0, dp(12))
+        })
         scrollView.scrollTo(0, 0)
     }
 
@@ -190,7 +198,7 @@ class LyricsOverlay(
 
     /** 설정 화면이나 알림에서 바뀐 값을 다시 읽어 반영한다. */
     fun applySettings() {
-        background.setColor(Color.argb(prefs.opacity * 255 / 100, 18, 18, 18))
+        background.setColor(Color.argb(prefs.opacity * 255 / 100, Palette.GLASS_R, Palette.GLASS_G, Palette.GLASS_B))
         val font = prefs.fontSp.toFloat()
         lyricsView.setTextSize(TypedValue.COMPLEX_UNIT_SP, font)
         currentLine.setTextSize(TypedValue.COMPLEX_UNIT_SP, font * 1.1f)
@@ -269,7 +277,7 @@ class LyricsOverlay(
         val target = targetBounds(asCompact)
         if (target[3] == WRAP) target[3] = restoreHeight
         val startRadius = background.cornerRadius
-        val endRadius = dp(if (asCompact) 12 else 14).toFloat()
+        val endRadius = dp(if (asCompact) RADIUS_COMPACT_DP else RADIUS_FULL_DP).toFloat()
         animateWindow(target, 260, DecelerateInterpolator(), onFrame = { t ->
             background.cornerRadius = startRadius + (endRadius - startRadius) * t
         }) {
@@ -325,26 +333,26 @@ class LyricsOverlay(
         val header = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(2), dp(2), dp(2))
+            setPadding(dp(16), dp(4), dp(4), dp(0))
             setOnTouchListener(DragListener())
         }
         header.addView(titleView, LinearLayout.LayoutParams(0, WRAP, 1f))
-        header.addView(button("얇게") { setCompact(true) })
-        header.addView(button("⋯") {
+        header.addView(iconButton(R.drawable.ic_compact, "얇게") { setCompact(true) })
+        header.addView(iconButton(R.drawable.ic_more, "더 보기") {
             controls.visibility = if (controls.visibility == View.VISIBLE) View.GONE else View.VISIBLE
         })
-        header.addView(button("—") { minimize() })
-        header.addView(button("✕") { actions.onClose() })
+        header.addView(iconButton(R.drawable.ic_minimize, "접기") { minimize() })
+        header.addView(iconButton(R.drawable.ic_close, "닫기") { actions.onClose() })
 
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(6), 0, dp(6), 0)
+            setPadding(dp(14), dp(2), dp(8), dp(8))
         }
-        row.addView(button("◀ 늦게") { actions.onOffsetDelta(-OFFSET_STEP_MS) })
+        row.addView(chip("◀ 늦게") { actions.onOffsetDelta(-OFFSET_STEP_MS) })
         row.addView(offsetView)
-        row.addView(button("빠르게 ▶") { actions.onOffsetDelta(OFFSET_STEP_MS) })
-        row.addView(button("다른 가사") { actions.onPickOther() })
-        row.addView(button("터치 통과") {
+        row.addView(chip("빠르게 ▶") { actions.onOffsetDelta(OFFSET_STEP_MS) })
+        row.addView(chip("다른 가사") { actions.onPickOther() })
+        row.addView(chip("터치 통과") {
             prefs.clickThrough = true
             applySettings()
             actions.onClickThroughChanged()
@@ -354,9 +362,10 @@ class LyricsOverlay(
         body.addView(lyricsView)
         scrollView.addView(body)
 
-        val resize = text(14f, DIM).apply {
-            text = "◢"
-            setPadding(dp(10), dp(4), dp(6), dp(2))
+        val resize = ImageView(ctx).apply {
+            setImageResource(R.drawable.ic_resize)
+            imageTintList = ColorStateList.valueOf(Palette.LYRIC_DIM)
+            setPadding(dp(12), dp(12), dp(4), dp(4))
             setOnTouchListener(ResizeListener())
         }
         val content = FrameLayout(ctx)
@@ -373,7 +382,7 @@ class LyricsOverlay(
         lines.addView(currentLine)
         lines.addView(nextLine)
         compactView.addView(lines, LinearLayout.LayoutParams(0, WRAP, 1f))
-        compactView.addView(button("—") { minimize() })
+        compactView.addView(iconButton(R.drawable.ic_minimize, "접기") { minimize() })
         compactView.setOnClickListener { setCompact(false) }
         compactView.setOnTouchListener(DragListener())
     }
@@ -392,8 +401,16 @@ class LyricsOverlay(
         }
         if (c.albumName.isNotBlank()) details += c.albumName
         return text(14f, Color.WHITE).apply {
-            text = "${c.trackName} — ${c.artistName}\n${details.joinToString(" · ")}"
-            setPadding(dp(16), dp(8), dp(16), dp(8))
+            text = SpannableStringBuilder("${c.trackName} — ${c.artistName}\n").apply {
+                val start = length
+                append(details.joinToString(" · "))
+                setSpan(ForegroundColorSpan(Palette.LYRIC_DIM), start, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                setSpan(RelativeSizeSpan(0.85f), start, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            setLineSpacing(dp(2).toFloat(), 1f)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = rounded(Palette.CHIP, 12)
+            layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(dp(10), dp(3), dp(10), dp(3)) }
             setOnClickListener { onClick() }
         }
     }
@@ -420,7 +437,7 @@ class LyricsOverlay(
         val asCompact = compact && !picking
         full.visibility = if (asCompact) View.GONE else View.VISIBLE
         compactView.visibility = if (asCompact) View.VISIBLE else View.GONE
-        background.cornerRadius = dp(if (asCompact) 12 else 14).toFloat()
+        background.cornerRadius = dp(if (asCompact) RADIUS_COMPACT_DP else RADIUS_FULL_DP).toFloat()
 
         val (x, y, w, h) = targetBounds(asCompact)
         params.x = x
@@ -484,7 +501,7 @@ class LyricsOverlay(
             if (i == index) {
                 curStart = start
                 val end = sb.length
-                sb.setSpan(ForegroundColorSpan(Color.WHITE), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                sb.setSpan(ForegroundColorSpan(Palette.ACCENT), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 sb.setSpan(StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 sb.setSpan(RelativeSizeSpan(1.15f), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
@@ -594,19 +611,36 @@ class LyricsOverlay(
         setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
     }
 
-    private fun button(label: String, onClick: () -> Unit) = text(14f, Color.WHITE).apply {
+    private fun rounded(color: Int, radiusDp: Int) = GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = dp(radiusDp).toFloat()
+    }
+
+    private fun iconButton(res: Int, label: String, onClick: () -> Unit) = ImageView(ctx).apply {
+        setImageResource(res)
+        imageTintList = ColorStateList.valueOf(Palette.GLASS_TITLE)
+        contentDescription = label
+        setPadding(dp(9), dp(9), dp(9), dp(9))
+        layoutParams = LinearLayout.LayoutParams(dp(38), dp(38))
+        setOnClickListener { onClick() }
+    }
+
+    private fun chip(label: String, onClick: () -> Unit) = text(13f, Color.WHITE).apply {
         text = label
-        setPadding(dp(10), dp(8), dp(10), dp(8))
+        setPadding(dp(12), dp(6), dp(12), dp(6))
+        background = rounded(Palette.CHIP, 99)
+        layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { marginEnd = dp(6) }
         setOnClickListener { onClick() }
     }
 
     companion object {
-        private val DIM = Color.parseColor("#99FFFFFF")
         private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
         private const val MIN_W_DP = 160
         private const val MIN_H_DP = 120
         private const val OFFSET_STEP_MS = 500L
         private const val BUBBLE_DP = 48
+        private const val RADIUS_FULL_DP = 18
+        private const val RADIUS_COMPACT_DP = 22
     }
 }

@@ -126,7 +126,7 @@ class LyricsOverlayService : Service(), LyricsOverlay.Actions {
 
     private fun startForegroundCompat() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "가사 플로팅", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CHANNEL_ID, "가사 창", NotificationManager.IMPORTANCE_LOW)
         )
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(NOTI_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
@@ -145,7 +145,7 @@ class LyricsOverlayService : Service(), LyricsOverlay.Actions {
         val through = prefs.clickThrough
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_tile)
-            .setContentTitle("가사 플로팅 실행 중")
+            .setContentTitle("가사 창이 떠 있어요")
             .setContentText(if (through) "터치 통과 중이라 가사 창을 누를 수 없어요" else "탭하면 설정 화면이 열려요")
             .setContentIntent(
                 PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
