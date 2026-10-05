@@ -5,16 +5,11 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.graphics.Color
-import android.graphics.PixelFormat
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
+import android.content.res.Configuration
+import android.graphics.drawable.Icon
 import android.media.MediaMetadata
-import android.media.session.MediaController
-import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.net.Uri
 import android.os.Build
@@ -22,242 +17,268 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
-import android.text.SpannableStringBuilder
-import android.text.Spanned
-import android.text.TextUtils
-import android.text.style.ForegroundColorSpan
-import android.text.style.RelativeSizeSpan
-import android.text.style.StyleSpan
-import android.util.TypedValue
-import android.view.Gravity
-import android.view.MotionEvent
-import android.view.View
-import android.view.ViewGroup
-import android.view.WindowManager
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
+import android.util.Log
 import android.widget.Toast
 import java.util.concurrent.Executors
 
-class LyricsOverlayService : Service() {
+/** 가사 창을 띄워 두는 동안 돌아가는 서비스. 빠른 설정 타일이나 앱 화면에서 켜고 끈다. */
+class LyricsOverlayService : Service(), LyricsOverlay.Actions {
 
     companion object {
         const val ACTION_STOP = "com.example.lyricsfloat.STOP"
+        const val ACTION_TOGGLE_CLICK_THROUGH = "com.example.lyricsfloat.TOGGLE_CLICK_THROUGH"
+        private const val TAG = "LyricsFloat"
         private const val CHANNEL_ID = "lyrics_overlay"
         private const val NOTI_ID = 1
-        private const val YTM_PACKAGE = "com.google.android.apps.youtube.music"
         private const val LEAD_MS = 250L // 가사를 살짝 앞당겨 표시
+        private const val FETCH_DELAY_MS = 400L
+        private const val NOT_FOUND = "가사를 찾지 못했어요.\n위쪽 ⋯ 메뉴의 '다른 가사'나 '웹 검색'을 써 보세요."
 
         @Volatile
         var instance: LyricsOverlayService? = null
         val running: Boolean get() = instance != null
     }
 
-    private lateinit var wm: WindowManager
-    private lateinit var params: WindowManager.LayoutParams
-    private var root: View? = null
-    private lateinit var titleView: TextView
-    private lateinit var lyricsView: TextView
-    private lateinit var scrollView: ScrollView
-
     private val handler = Handler(Looper.getMainLooper())
-    private val executor = Executors.newSingleThreadExecutor()
+    private val pool = Executors.newCachedThreadPool()
 
-    private var controller: MediaController? = null
+    private lateinit var prefs: Prefs
+    private lateinit var repo: LyricsRepository
+    private lateinit var overlay: LyricsOverlay
+    private lateinit var watcher: YtmWatcher
+
+    /** 곡이 바뀔 때마다 올려서, 지난 곡을 위해 진행 중이던 요청 결과를 버린다. */
+    @Volatile
+    private var generation = 0
+    private var track: Track? = null
+    private var lyrics: Lyrics? = null
+    private var offsetMs = 0L
+    private var hadSession = false
     private var listenerAccessMissing = false
-    private var tickCount = 0
-    private var currentKey: String? = null
-    private var curTitle = ""
-    private var curArtist = ""
-    private var lines: List<LrcLine> = emptyList()
-    private var lastIndex = -2
 
-    private val tick = object : Runnable {
-        override fun run() {
-            try {
-                tickOnce()
-            } catch (e: Exception) {
-                // 한 번 실패해도 다음 틱에서 계속
-            }
-            handler.postDelayed(this, 500)
-        }
-    }
+    private val tick = Runnable { syncHighlight() }
+    private val fetch = Runnable { fetchLyrics() }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        prefs = Prefs(this)
+        repo = LyricsRepository(this)
+        overlay = LyricsOverlay(this, prefs, this)
+        watcher = YtmWatcher(this, handler, ::onPlayerChanged)
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopSelf()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_TOGGLE_CLICK_THROUGH -> {
+                if (instance == null) {
+                    stopSelf()
+                } else {
+                    prefs.clickThrough = !prefs.clickThrough
+                    onSettingsChanged()
+                }
+                return START_NOT_STICKY
+            }
         }
-        startAsForeground()
+        startForegroundCompat()
         if (!Permissions.hasOverlay(this)) {
             Toast.makeText(this, "'다른 앱 위에 표시' 권한이 필요해요", Toast.LENGTH_LONG).show()
             stopSelf()
             return START_NOT_STICKY
         }
-        if (root == null) {
-            createOverlay()
+        if (instance == null) {
             instance = this
-            handler.post(tick)
+            listenerAccessMissing = !watcher.start()
+            overlay.show()
+            onPlayerChanged()
             LyricsTileService.requestUpdate(this)
         }
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
+        generation++
         handler.removeCallbacksAndMessages(null)
-        root?.let { runCatching { wm.removeView(it) } }
-        root = null
+        watcher.stop()
+        runCatching { overlay.hide() }
+        pool.shutdownNow()
         instance = null
-        executor.shutdownNow()
         LyricsTileService.requestUpdate(this)
         super.onDestroy()
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        overlay.onConfigurationChanged()
+    }
+
+    /** 앱 설정 화면이나 알림 버튼에서 설정을 바꿨을 때. */
+    fun onSettingsChanged() {
+        overlay.applySettings()
+        getSystemService(NotificationManager::class.java).notify(NOTI_ID, buildNotification())
+    }
+
     // ---------- 포그라운드 알림 ----------
-    private fun startAsForeground() {
-        val nm = getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(
+
+    private fun startForegroundCompat() {
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "가사 플로팅", NotificationManager.IMPORTANCE_LOW)
         )
-        val stop = PendingIntent.getService(
-            this, 0,
-            Intent(this, LyricsOverlayService::class.java).setAction(ACTION_STOP),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-        val n = Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentTitle("가사 플로팅 실행 중")
-            .setContentText("탭하면 종료돼요")
-            .setContentIntent(stop)
-            .setOngoing(true)
-            .build()
         if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NOTI_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            startForeground(NOTI_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
-            startForeground(NOTI_ID, n)
+            startForeground(NOTI_ID, buildNotification())
         }
     }
 
-    // ---------- 오버레이 UI ----------
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
-
-    private fun headerButton(label: String, onClick: () -> Unit): TextView =
-        TextView(this).apply {
-            text = label
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            setOnClickListener { onClick() }
-        }
-
-    private fun createOverlay() {
-        wm = getSystemService(WINDOW_SERVICE) as WindowManager
-
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#E6121212"))
-                cornerRadius = dp(16).toFloat()
-            }
-        }
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(6), dp(6), dp(6))
-        }
-        titleView = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            text = "유튜브 뮤직 대기 중"
-        }
-        header.addView(
-            titleView,
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+    private fun buildNotification(): Notification {
+        fun serviceIntent(action: String, code: Int) = PendingIntent.getService(
+            this, code,
+            Intent(this, LyricsOverlayService::class.java).setAction(action),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        header.addView(headerButton("웹") { searchWeb() })
-        header.addView(headerButton("✕") { stopSelf() })
+        val icon = Icon.createWithResource(this, R.drawable.ic_tile)
+        val through = prefs.clickThrough
+        return Notification.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_tile)
+            .setContentTitle("가사 플로팅 실행 중")
+            .setContentText(if (through) "터치 통과 중이라 가사 창을 누를 수 없어요" else "탭하면 설정 화면이 열려요")
+            .setContentIntent(
+                PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+            )
+            .setOngoing(true)
+            .addAction(
+                Notification.Action.Builder(
+                    icon, if (through) "터치 통과 끄기" else "터치 통과 켜기",
+                    serviceIntent(ACTION_TOGGLE_CLICK_THROUGH, 1),
+                ).build()
+            )
+            .addAction(Notification.Action.Builder(icon, "종료", serviceIntent(ACTION_STOP, 2)).build())
+            .build()
+    }
 
-        scrollView = ScrollView(this)
-        lyricsView = TextView(this).apply {
-            setTextColor(Color.parseColor("#99FFFFFF"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-            setLineSpacing(0f, 1.25f)
-            setPadding(dp(16), dp(8), dp(16), dp(24))
-            text = "유튜브 뮤직에서 노래를 재생해 주세요"
-        }
-        scrollView.addView(lyricsView)
+    // ---------- 재생 정보 ----------
 
-        container.addView(header)
-        container.addView(
-            scrollView,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
-        )
-
-        params = WindowManager.LayoutParams(
-            resources.displayMetrics.widthPixels - dp(32),
-            dp(280),
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = dp(16)
-            y = dp(120)
-        }
-
-        // 헤더를 잡고 드래그해서 창 이동
-        header.setOnTouchListener(object : View.OnTouchListener {
-            var startX = 0
-            var startY = 0
-            var downX = 0f
-            var downY = 0f
-            override fun onTouch(v: View, e: MotionEvent): Boolean {
-                when (e.action) {
-                    MotionEvent.ACTION_DOWN -> {
-                        startX = params.x; startY = params.y
-                        downX = e.rawX; downY = e.rawY
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        params.x = startX + (e.rawX - downX).toInt()
-                        params.y = startY + (e.rawY - downY).toInt()
-                        wm.updateViewLayout(container, params)
-                    }
-                }
-                return true
+    private fun onPlayerChanged() {
+        val c = watcher.controller
+        if (c == null) {
+            handler.removeCallbacks(tick)
+            handler.removeCallbacks(fetch)
+            if (hadSession) {
+                // 유튜브 뮤직이 종료되면 창을 숨긴다. 다시 재생하면 나타난다.
+                overlay.hide()
+            } else {
+                overlay.setTitle("유튜브 뮤직 대기 중")
+                overlay.showMessage(
+                    if (listenerAccessMissing) "알림 접근 권한을 켜 주세요 (앱 화면에서 설정)"
+                    else "유튜브 뮤직에서 노래를 재생해 주세요"
+                )
             }
-        })
+            return
+        }
+        hadSession = true
+        overlay.show()
 
-        wm.addView(container, params)
-        root = container
+        val md = c.metadata
+        val rawTitle = md?.getString(MediaMetadata.METADATA_KEY_TITLE)
+        if (md == null || rawTitle.isNullOrBlank()) {
+            clearTrack("유튜브 뮤직 대기 중", "유튜브 뮤직에서 노래를 재생해 주세요")
+            return
+        }
+        if (Track.isLikelyAd(rawTitle)) {
+            clearTrack("광고", "광고가 끝나면 가사를 보여 줄게요")
+            return
+        }
+        val rawArtist = md.getString(MediaMetadata.METADATA_KEY_ARTIST)
+            ?: md.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST).orEmpty()
+        val t = Track.from(
+            rawTitle, rawArtist,
+            md.getString(MediaMetadata.METADATA_KEY_ALBUM).orEmpty(),
+            md.getLong(MediaMetadata.METADATA_KEY_DURATION),
+        )
+        if (t.key != track?.key) {
+            Log.d(TAG, "새 곡: '$rawTitle' / '$rawArtist' → $t")
+            onNewTrack(t)
+        } else {
+            // 같은 곡이어도 길이가 나중에 채워질 수 있어서 최신 값으로 바꿔 둔다.
+            track = t
+        }
+        syncHighlight()
     }
 
-    private fun searchWeb() {
-        val q = Uri.encode("$curTitle $curArtist 가사".trim())
-        val i = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=$q"))
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        runCatching { startActivity(i) }
+    private fun clearTrack(title: String, message: String) {
+        generation++
+        handler.removeCallbacks(tick)
+        handler.removeCallbacks(fetch)
+        track = null
+        lyrics = null
+        if (overlay.isPicking) overlay.closePicker()
+        overlay.setTitle(title)
+        overlay.showMessage(message)
     }
 
-    // ---------- 재생 정보 추적 ----------
-    private fun findController(): MediaController? {
-        return try {
-            listenerAccessMissing = false
-            val msm = getSystemService(MediaSessionManager::class.java)
-            val list = msm.getActiveSessions(ComponentName(this, LyricsListenerService::class.java))
-            list.firstOrNull { it.packageName == YTM_PACKAGE }
-        } catch (e: SecurityException) {
-            listenerAccessMissing = true
-            null
+    private fun onNewTrack(t: Track) {
+        generation++
+        track = t
+        lyrics = null
+        offsetMs = prefs.offsetMs(t.key)
+        if (overlay.isPicking) overlay.closePicker()
+        overlay.setTitle(if (t.artist.isBlank()) t.title else "${t.title} — ${t.artist}")
+        overlay.setOffset(offsetMs)
+        overlay.showMessage("가사를 찾는 중…")
+        // 곡을 빠르게 넘기거나 메타데이터가 나눠서 들어올 때 요청이 몰리지 않도록 잠깐 기다린다.
+        handler.removeCallbacks(fetch)
+        handler.postDelayed(fetch, FETCH_DELAY_MS)
+    }
+
+    private fun fetchLyrics() {
+        val t = track ?: return
+        val gen = generation
+        pool.execute {
+            val r = runCatching { repo.find(t) { gen != generation } }
+                .onFailure { Log.w(TAG, "가사 검색 실패: $t", it) }
+                .getOrNull()
+            handler.post { if (gen == generation) applyLyrics(r) }
         }
     }
 
-    private fun position(c: MediaController): Long {
-        val s = c.playbackState ?: return 0L
+    private fun applyLyrics(r: Lyrics?) {
+        lyrics = r
+        when {
+            r == null -> overlay.showMessage(NOT_FOUND)
+            r.lines.isNotEmpty() -> overlay.showSynced(r.lines)
+            r.plain != null -> overlay.showPlain(r.plain)
+            r.instrumental -> overlay.showMessage("♪ 연주곡이에요")
+            else -> overlay.showMessage(NOT_FOUND)
+        }
+        syncHighlight()
+    }
+
+    /** 지금 줄을 표시하고, 재생 중이면 다음 줄이 시작될 때 다시 깨어나도록 예약한다. */
+    private fun syncHighlight() {
+        handler.removeCallbacks(tick)
+        val lines = lyrics?.lines
+        val s = watcher.controller?.playbackState
+        if (lines.isNullOrEmpty() || s == null || !overlay.isShowing) return
+
+        val pos = position(s) + LEAD_MS + offsetMs
+        val idx = lines.indexOfLast { it.timeMs <= pos }
+        overlay.highlight(idx)
+
+        if (s.state != PlaybackState.STATE_PLAYING) return
+        val next = lines.getOrNull(idx + 1) ?: return
+        val speed = s.playbackSpeed.coerceAtLeast(0.1f)
+        // 재생 위치가 조금씩 어긋날 수 있어 길어도 1초마다는 다시 맞춘다.
+        val delay = ((next.timeMs - pos) / speed).toLong().coerceIn(20L, 1000L)
+        handler.postDelayed(tick, delay)
+    }
+
+    private fun position(s: PlaybackState): Long {
         var pos = s.position
         if (s.state == PlaybackState.STATE_PLAYING) {
             pos += ((SystemClock.elapsedRealtime() - s.lastPositionUpdateTime) * s.playbackSpeed).toLong()
@@ -265,125 +286,49 @@ class LyricsOverlayService : Service() {
         return pos
     }
 
-    private fun tickOnce() {
-        tickCount++
-        if (controller == null || tickCount % 4 == 0) controller = findController()
-        val c = controller
-        if (c == null) {
-            resetTrack()
-            showStatus(
-                if (listenerAccessMissing) "알림 접근 권한을 켜 주세요 (앱 화면에서 설정)"
-                else "유튜브 뮤직에서 노래를 재생해 주세요"
-            )
-            return
-        }
-        val md = c.metadata
-        val title = md?.getString(MediaMetadata.METADATA_KEY_TITLE)
-        if (md == null || title.isNullOrBlank()) {
-            resetTrack()
-            showStatus("유튜브 뮤직에서 노래를 재생해 주세요")
-            return
-        }
-        val artist = md.getString(MediaMetadata.METADATA_KEY_ARTIST)
-            ?: md.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST) ?: ""
-        val album = md.getString(MediaMetadata.METADATA_KEY_ALBUM) ?: ""
-        val durationMs = md.getLong(MediaMetadata.METADATA_KEY_DURATION)
+    // ---------- 가사 창 버튼 ----------
 
-        val key = "$title|$artist|$durationMs"
-        if (key != currentKey) {
-            currentKey = key
-            onNewTrack(title, artist, album, durationMs)
-        }
-        if (lines.isNotEmpty()) updateHighlight(position(c))
+    override fun onClose() = stopSelf()
+
+    override fun onWebSearch() {
+        val t = track ?: return
+        val q = Uri.encode("${t.title} ${t.artist} 가사".trim())
+        val i = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=$q"))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { startActivity(i) }.onFailure { Log.w(TAG, "웹 검색 열기 실패", it) }
     }
 
-    private fun resetTrack() {
-        currentKey = null
-        lines = emptyList()
-        lastIndex = -2
-        curTitle = ""
-        curArtist = ""
-        titleView.text = "유튜브 뮤직 대기 중"
+    override fun onOffsetDelta(deltaMs: Long) = setOffset(offsetMs + deltaMs)
+
+    override fun onOffsetReset() = setOffset(0L)
+
+    private fun setOffset(ms: Long) {
+        val t = track ?: return
+        offsetMs = ms
+        prefs.setOffsetMs(t.key, ms)
+        overlay.setOffset(ms)
+        syncHighlight()
     }
 
-    private fun showStatus(msg: String) {
-        if (lyricsView.text.toString() != msg) lyricsView.text = msg
-    }
-
-    private fun onNewTrack(title: String, artist: String, album: String, durationMs: Long) {
-        curTitle = title
-        curArtist = artist
-        titleView.text = if (artist.isBlank()) title else "$title — $artist"
-        lines = emptyList()
-        lastIndex = -2
-        lyricsView.text = "가사를 찾는 중…"
-        scrollView.scrollTo(0, 0)
-
-        val key = currentKey
-        executor.execute {
-            val r = try {
-                LyricsRepository.fetch(title, artist, album, (durationMs / 1000).toInt())
-            } catch (e: Exception) {
-                null
-            }
+    override fun onPickOther() {
+        val t = track ?: return
+        val gen = generation
+        overlay.showPicker(null, t.durationSec) {}
+        pool.execute {
+            val list = runCatching { repo.candidates(t) }
+                .onFailure { Log.w(TAG, "후보 검색 실패: $t", it) }
+                .getOrDefault(emptyList())
             handler.post {
-                if (key == currentKey && root != null) applyResult(r)
+                if (gen != generation || !overlay.isPicking) return@post
+                overlay.showPicker(list, t.durationSec) { c ->
+                    generation++
+                    applyLyrics(repo.save(t, Choice(c, useSynced = c.synced != null)))
+                }
             }
         }
     }
 
-    private fun applyResult(r: LyricsResult?) {
-        val notFound = "가사를 찾지 못했어요.\n오른쪽 위 '웹' 버튼으로 검색해 보세요."
-        if (r == null) {
-            lyricsView.text = notFound
-            return
-        }
-        val plain = r.plain
-        when {
-            r.synced.isNotEmpty() -> {
-                lines = r.synced
-                lastIndex = -2 // 다음 틱에서 렌더링
-            }
-            plain != null -> {
-                lyricsView.text = plain
-                scrollView.scrollTo(0, 0)
-            }
-            r.instrumental -> lyricsView.text = "♪ 연주곡이에요"
-            else -> lyricsView.text = notFound
-        }
-    }
-
-    private fun updateHighlight(posMs: Long) {
-        var idx = -1
-        for (i in lines.indices) {
-            if (lines[i].timeMs <= posMs + LEAD_MS) idx = i else break
-        }
-        if (idx != lastIndex) {
-            lastIndex = idx
-            render(idx)
-        }
-    }
-
-    private fun render(idx: Int) {
-        val sb = SpannableStringBuilder()
-        var curStart = 0
-        for ((i, l) in lines.withIndex()) {
-            val start = sb.length
-            sb.append(if (l.text.isBlank()) "♪" else l.text)
-            if (i == idx) {
-                curStart = start
-                val end = sb.length
-                sb.setSpan(ForegroundColorSpan(Color.WHITE), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                sb.setSpan(StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                sb.setSpan(RelativeSizeSpan(1.15f), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            }
-            sb.append("\n")
-        }
-        lyricsView.text = sb
-        lyricsView.post {
-            val layout = lyricsView.layout ?: return@post
-            val y = layout.getLineTop(layout.getLineForOffset(curStart)) - scrollView.height / 3
-            scrollView.smoothScrollTo(0, maxOf(0, y))
-        }
+    override fun onClickThroughChanged() {
+        getSystemService(NotificationManager::class.java).notify(NOTI_ID, buildNotification())
     }
 }
