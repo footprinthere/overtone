@@ -5,7 +5,7 @@ import kotlin.math.abs
 private val ARTIST_SEPARATORS =
     Regex("\\s*(?:,|&|•|/|\\bx\\b|\\bfeat\\.?|\\bft\\.?|\\bfeaturing\\b|\\bwith\\b)\\s*", RegexOption.IGNORE_CASE)
 
-/** 유튜브 뮤직 메타데이터를 가사 검색에 맞게 정리한 곡 정보. */
+/** 음악 앱 메타데이터를 가사 검색에 맞게 정리한 곡 정보. */
 data class Track(
     val title: String,
     val artist: String,
@@ -38,7 +38,7 @@ data class Track(
 
         fun isLikelyAd(rawTitle: String): Boolean = rawTitle.trim().lowercase() in AD_TITLES
 
-        /** 유튜브 뮤직이 넘겨준 그대로의 값을 정리한다. 뮤직비디오는 가수 자리에 채널명이 오기도 한다. */
+        /** 음악 앱이 넘겨준 그대로의 값을 정리한다. 유튜브 뮤직의 뮤직비디오는 가수 자리에 채널명이 오기도 한다. */
         fun from(rawTitle: String, rawArtist: String, album: String, durationMs: Long): Track {
             val artist = rawArtist.replace(CHANNEL_SUFFIX, "").trim()
             var title = rawTitle.replace(NOISE_BRACKET, "").trim()
@@ -95,7 +95,7 @@ object TrackMatcher {
 
     /**
      * 비교에 쓸 여러 표기. "Through the Night (밤편지)" 는 전체, 괄호 밖 "Through the Night", 괄호 안 "밤편지"
-     * 세 가지로 비교해서 유튜브 뮤직이 한국어 제목만 줘도 맞출 수 있게 한다.
+     * 세 가지로 비교해서 음악 앱이 한국어 제목만 줘도 맞출 수 있게 한다.
      */
     fun forms(s: String): Set<String> {
         val out = mutableSetOf(normalize(s), normalize(s.replace(BRACKETED, " ")))

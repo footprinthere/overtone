@@ -23,7 +23,7 @@
             </intent-filter>
         </activity>
 
-        <!-- 유튜브 뮤직의 재생 정보(MediaSession)를 읽기 위한 알림 접근용 서비스 -->
+        <!-- 음악 앱의 재생 정보(MediaSession)를 읽기 위한 알림 접근용 서비스 -->
         <service
             android:name=".LyricsListenerService"
             android:exported="true"

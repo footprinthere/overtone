@@ -56,7 +56,7 @@ class MainActivity : Activity() {
         }
         col.addView(text(28f, Palette.TEXT, bold = true).apply { text = getString(R.string.app_name) })
         col.addView(text(14f, Palette.MUTED).apply {
-            text = "유튜브 뮤직에서 듣는 곡의 가사를 다른 앱 위에 띄워요"
+            text = "음악 앱에서 듣는 곡의 가사를 다른 앱 위에 띄워요"
             setPadding(0, dp(4), 0, dp(20))
         })
         col.addView(hero())
@@ -67,7 +67,7 @@ class MainActivity : Activity() {
             addView(step("다른 앱 위에 표시", "가사 창을 띄우는 데 필요해요", { Permissions.hasOverlay(this@MainActivity) }) {
                 startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
             })
-            addView(step("알림 접근", "유튜브 뮤직이 재생 중인 곡을 알아내요", { Permissions.hasListenerAccess(this@MainActivity) }) {
+            addView(step("알림 접근", "음악 앱이 재생 중인 곡을 알아내요", { Permissions.hasListenerAccess(this@MainActivity) }) {
                 startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
             })
             if (Build.VERSION.SDK_INT >= 33) {

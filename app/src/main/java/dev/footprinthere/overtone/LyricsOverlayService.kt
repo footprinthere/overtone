@@ -44,7 +44,7 @@ class LyricsOverlayService : Service(), LyricsOverlay.Actions {
     private lateinit var prefs: Prefs
     private lateinit var repo: LyricsRepository
     private lateinit var overlay: LyricsOverlay
-    private lateinit var watcher: YtmWatcher
+    private lateinit var watcher: PlayerWatcher
 
     /** 곡이 바뀔 때마다 올려서, 지난 곡을 위해 진행 중이던 요청 결과를 버린다. */
     @Volatile
@@ -65,7 +65,7 @@ class LyricsOverlayService : Service(), LyricsOverlay.Actions {
         prefs = Prefs(this)
         repo = LyricsRepository(this)
         overlay = LyricsOverlay(this, prefs, this)
-        watcher = YtmWatcher(this, handler, ::onPlayerChanged)
+        watcher = PlayerWatcher(this, handler, ::onPlayerChanged)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -169,13 +169,13 @@ class LyricsOverlayService : Service(), LyricsOverlay.Actions {
             handler.removeCallbacks(tick)
             handler.removeCallbacks(fetch)
             if (hadSession) {
-                // 유튜브 뮤직이 종료되면 창을 숨긴다. 다시 재생하면 나타난다.
+                // 음악 앱이 종료되면 창을 숨긴다. 다시 재생하면 나타난다.
                 overlay.hide()
             } else {
-                overlay.setTitle("유튜브 뮤직 대기 중")
+                overlay.setTitle("음악 앱 대기 중")
                 overlay.showMessage(
                     if (listenerAccessMissing) "알림 접근 권한을 켜 주세요 (앱 화면에서 설정)"
-                    else "유튜브 뮤직에서 노래를 재생해 주세요"
+                    else "음악 앱에서 노래를 재생해 주세요"
                 )
             }
             return
@@ -186,7 +186,7 @@ class LyricsOverlayService : Service(), LyricsOverlay.Actions {
         val md = c.metadata
         val rawTitle = md?.getString(MediaMetadata.METADATA_KEY_TITLE)
         if (md == null || rawTitle.isNullOrBlank()) {
-            clearTrack("유튜브 뮤직 대기 중", "유튜브 뮤직에서 노래를 재생해 주세요")
+            clearTrack("음악 앱 대기 중", "음악 앱에서 노래를 재생해 주세요")
             return
         }
         if (Track.isLikelyAd(rawTitle)) {
